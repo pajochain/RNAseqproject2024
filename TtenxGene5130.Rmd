@@ -48,7 +48,7 @@ library(gageData)
 ## Renames the column names in the count table to reflect the row names in the metadata. 
 
 ```{r}
-new_column_names <- c("SRR23972388", "SRR23972387", "SRR23972386", "SRR23972385", "SRR23972384", "SRR23972383")
+new_column_names <- c("SRR23972383", "SRR23972384", "SRR23972385", "SRR23972386", "SRR23972387", "SRR23972388")
 colnames(counts) <- new_column_names
 ```
 
