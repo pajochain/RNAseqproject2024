@@ -1,0 +1,256 @@
+---
+title: "Gene5130ProjectT.tenax"
+author: "Paulo Tanicala"
+date: "2024-04-05"
+output: html_document
+---
+
+```{r setup}
+ knitr::opts_knit$set(root.dir = normalizePath('C:/Users/tanic/OneDrive - Keck Graduate Institute/KGI Files/Spring 2024/Bioinformatics in R/ProjectFiles'))
+```
+
+## Loads the counts able generated and removes unneeded columns. 
+## Loads the meta data for the experiment. 
+```{r counts table}
+#Solution: https://www.biostars.org/p/366025/
+counts <- read.table('new_grch38_counts.txt', row.names = 1, header = TRUE)
+
+# exclude superfluous columns
+counts <- counts[, -c(1:5)]
+metadata <- read.csv('grch38_metadata.csv', row.names = 1, header = TRUE)
+```
+
+## Loads the necessary libraries for data analysis and visualizations.
+
+```{r}
+library(dplyr)
+library(readr)
+library(DESeq2)
+library(ggplot2)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+# library(clusterProfiler)
+library("org.Hs.eg.db")
+# library(gprofiler2) 
+
+# BiocManager::install("pathview")
+# BiocManager::install("gageData")
+# BiocManager::install("gage")
+# BiocManager::install("AnnotationDbi")
+
+library(pathview)
+library(gage)
+library(gageData)
+# library(AnnotationDbi)
+```
+
+
+## Renames the column names in the count table to reflect the row names in the metadata. 
+
+```{r}
+new_column_names <- c("SRR23972383", "SRR23972384", "SRR23972385", "SRR23972386", "SRR23972387", "SRR23972388")
+colnames(counts) <- new_column_names
+```
+
+# DESeq2
+
+## Creates the DESeq object for analysis
+```{r}
+sample_info <- metadata
+dds <- DESeqDataSetFromMatrix(countData = counts, 
+                              colData = sample_info,
+                              design = ~ Treatment)
+```
+
+## subset the DESeq object to only include counts with a row sum of > or = 10.
+```{r}
+subset_dds <- dds[rowSums(counts(dds)) >= 10,]
+subset_dds 
+```
+
+## Defines the treatment values and reference columns for differenetion expression analysis.
+```{r}
+relevel(dds$Treatment, ref = 'untreated')
+```
+
+## Runs differential expression analysis.
+```{r}
+deseq_ob <- DESeq(subset_dds)
+```
+
+
+## Shows results using a significane threshold of 0.05 and prints out a summary of the data.
+```{r}
+res <- results(deseq_ob, alpha = 0.05)
+summary(res)
+```
+
+## Plots the mean of normalized counts against the log2 fold changes.
+```{r}
+plotMA(deseq_ob)
+```
+
+
+# Gene Ontology Analysis
+
+## converts the results into a dataframe and translates the ENSEMBL IDs into their corresponding gene symbols.
+```{r}
+sigs.df <-  as.data.frame(res)
+sigs.df$symbol <- mapIds(org.Hs.eg.db, keys= rownames(sigs.df), keytype = 'ENSEMBL', colum = "SYMBOL")
+```
+
+
+## Creates a volcano plot showcasing the upregulated and downregulated genes. 
+```{r fig.height=7}
+EnhancedVolcano(sigs.df, x='log2FoldChange', y = 'padj', lab = sigs.df$symbol,pCutoff = 10e-10,
+    FCcutoff = 1.5,
+    pointSize = 3.0,
+    labSize = 6.0)
+```
+
+
+# Heatmap
+
+## Further filters the results dataframe in preparation for the creation of a heatmap.
+```{r}
+diff.df <- as.data.frame(sigs.df)
+diff.df <- diff.df %>%
+  filter(padj < 0.05, log2FoldChange > 1.5, baseMean > 100) #This filters the values to only include the most informative data points.
+```
+
+
+## Creates a heatmap of the filtered results dataframe.
+```{r}
+mat <- counts(deseq_ob, normalized = T)[rownames(diff.df),]
+mat.z <- t(apply(mat,1, scale)) #loses column names after scaling
+colnames(mat.z) <- colnames(mat) #adds column names back
+Heatmap(mat.z, cluster_rows= T, cluster_columns= T, name = "Z-score", row_labels = diff.df[rownames(mat.z),]$symbol) ##this subsets, boolean values
+```
+
+
+# Gene Ontology Analysis
+
+## First, extracts genes to test for from the further filtered results dataframe.
+## Second, plots overrepresented biological functions of the genes extracted.
+```{R}
+diff.df <- as.data.frame(sigs.df)
+diff.df <- diff.df %>%
+  filter(padj < 0.05, log2FoldChange > 0 , baseMean > 100)
+
+genes_to_test <- rownames(diff.df)
+# "BP" for biological process, "MF" for molecular function, or "CC" for cellular component
+GO_results <- enrichGO(gene = genes_to_test, OrgDb = "org.Hs.eg.db", keyType = 'ENSEMBL', ont = "BP")
+fit <- plot(barplot(GO_results))
+```
+
+## Creates a manhatta plot showing the functional enrchment results.
+```{R}
+go_upreg <- gost(genes_to_test, organism = 'hsapiens', significant = T)
+gostplot(go_upreg, interactive = T)
+```
+
+
+# KEGG pathways
+#### Tutorial followed: https://www.youtube.com/watch?v=SMBF4DyRiuo&ab_channel=AlexSoupir
+
+## Adds 3 new columns to the results data, refseq ID, gene symbol, and species specific gene IDs ENTREZ.
+```{r}
+#Adds reference sequence IDs as a new column
+res$refseq = (row.names(res))
+
+res$SYMBOL = mapIds(org.Hs.eg.db,
+                    key= res$refseq,
+                    column="SYMBOL",
+                    keytype = "ENSEMBL",
+                    multivals ="first")
+
+res$ENTREZ = mapIds(org.Hs.eg.db,
+                    key= res$refseq,
+                    column="ENTREZID",
+                    keytype = "ENSEMBL",
+                    multivals ="first")
+```
+
+
+```{r}
+foldchanges = res$log2FoldChange
+names(foldchanges) = res$ENTREZ
+```
+
+## Loads gene ontology datasets
+```{r}
+data("go.sets.hs")
+data("go.subs.hs")
+```
+
+## subsets the datasets to only inclue biologicl processes and prepares it for pathway analysis.
+```{r}
+gobpsets = go.sets.hs[go.subs.hs$BP]
+gobpres = gage(exprs = foldchanges, gsets = gobpsets, same.dir = TRUE)
+```
+
+## Loads Kegg pathway datasets.
+```{r}
+data("kegg.sets.hs")
+data("sigmet.idx.hs")
+kegg.sets.hs = kegg.sets.hs[sigmet.idx.hs]
+```
+
+## Compares the foldchanges from the results data against the kegg pathways database.
+```{r}
+keggres = gage(foldchanges, gsets = kegg.sets.hs, same.dir = TRUE)
+```
+
+## Finds the second most upregulated Kegg pathway based on the results data. 
+```{r}
+keggrespathways = data.frame(id = rownames(keggres$greater), keggres$greater) %>%
+  tibble::as_tibble() %>%
+  filter(row_number() == 2) %>%
+  .$id %>%
+  as.character()
+keggrespathways
+```
+
+## Reduces the kegg pathway IDs to only include the first 8 symbols. 
+```{r}
+keggresids = substr(keggrespathways, start=1, stop=8)
+keggresids
+```
+
+## Plots and downloads the pathway of interest.
+```{r}
+tmp = sapply(keggresids, function(pid) pathview(gene.data = foldchanges, pathway.id = pid, species = "hsa"))
+```
+
+## Shows the pathway image in markdown. 
+```{r}
+knitr::include_graphics("hsa03040.pathview.png", error = FALSE)
+```
+
+## Finds the most downregulated Kegg pathway based on the results data. 
+```{r}
+keggrespathways2 = data.frame(id = rownames(keggres$less), keggres$less) %>%
+  tibble::as_tibble() %>%
+  filter(row_number() == 1) %>%
+  .$id %>%
+  as.character()
+keggrespathways2
+```
+
+## Reduces the kegg pathway IDs to only include the first 8 symbols. 
+```{r}
+keggresids2 = substr(keggrespathways2, start=1, stop=8)
+keggresids2
+```
+
+## Plots and downloads the pathway of interest.
+```{r}
+tmp2 = sapply(keggresids2, function(pid) pathview(gene.data = foldchanges, pathway.id = pid, species = "hsa"))
+```
+
+## Shows the pathway image in markdown. 
+```{r}
+knitr::include_graphics("hsa04110.pathview.png", error = FALSE)
+```
+
+
